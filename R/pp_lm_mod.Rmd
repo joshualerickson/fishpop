@@ -1,0 +1,250 @@
+---
+title: "lmm"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(dev.args = list(png = list(type = "cairo")),fig.width = 10, fig.height = 5,
+                      warning = FALSE, message = FALSE, error = FALSE)
+library(tidyverse)
+library(broom)
+library(broom.mixed)
+library(sf)
+library(jtools)
+library(robustlmm)
+library(lme4)
+library(gtsummary)
+library(sjPlot)
+library(gt)
+source('functions.R')
+
+
+fish_stuff <- read_csv('pat_fish.csv') %>% janitor::clean_names()
+
+fish_stuff_ts <- read_csv('pat_fish.csv') %>% janitor::clean_names()
+
+fish_stuff_ts <- fish_stuff_ts %>% mutate(stream_id = str_remove_all(stream_id, '-[^-]+$'))
+
+playing <- fish_stuff_ts %>% select(density_fish_m2, 
+                                    fish_1000,
+                                    crop_fac_taudem_17all_int,
+                                    crop_permeable_100_cpg_all,
+                                    pools_mile, 
+                                    stream_id, year,
+                                    fish_species,
+                                    crop_silt_100_cpg_all) %>% 
+  mutate(stream_id = factor(stream_id),
+         area = crop_fac_taudem_17all_int*30*30*0.000247105,
+         silt = as.numeric(scale(crop_silt_100_cpg_all)),
+         perm = as.numeric(scale(crop_permeable_100_cpg_all)),
+         year = abs(min(year)-year)) %>% 
+  filter(!is.na(density_fish_m2), !is.na(area)) %>% 
+  add_count(stream_id) %>% 
+  filter(n>1)
+
+
+```
+
+## Linear mixed models
+
+Get lmm for bankfull widths.
+
+```{r}
+
+## compare mods to see if what we need for slopes and intercepts
+
+#bring in covariates 
+
+lmm_bf_simp <- lmer(density_fish_m2 ~ 
+                      year + 
+                      (year|stream_id), 
+                       playing ,
+                 control = lmerControl(optimizer = 'Nelder_Mead'))
+
+
+lmm_bf <- lm(density_fish_m2 ~ area + 
+                      year , 
+                       data = playing)
+summary(lmm_bf_simp)
+summ(lmm_bf_simp)
+summ(lmm_bf)
+install.packages('dfoptim')
+
+aa <- allFit(lmm_bf_simp)
+broom.mixed::glance(aa) %>% select(optimizer, AIC, NLL_rel) %>%  arrange(NLL_rel)
+broom.mixed::tidy(aa, conf.int = TRUE) %>%  
+  arrange(effect, term, estimate) %>%  
+  select(-c(std.error, statistic)) %>% view()
+aa_aug <- broom.mixed::augment(lmm_bf_simp)
+# finding the chi square 
+anova(lmm_bf_simp_yr, lmm_bf_simp)
+
+#best model was the simple model by year
+
+# getting summary; ICC, p values, fixed/random effects
+# using the Kenward-Roger method.
+
+summ(lmm_bf_simp_yr, confint = T, t.df = 'k-r')
+summ(lmm_bf_simp, confint = T, t.df = 'k-r')
+
+#get precise icc
+performance::icc(lmm_bf_simp)
+performance::icc(lmm_bf_simp_yr)
+
+#table for appendix
+
+sjPlot::tab_model(lmm_bf_simp, lmm_bf_simp_yr,
+               df.method = 'kr',pred.labels = c(`log(fac_taudem_17all_int)`="log(FA Catchment Area)",
+               `us_precip_1981_2010_cpg_all`="FA Average Annual Precipitation",
+               `us_tmax_1981_2010_int_cpg_all`="FA Temperature Max",
+               `slope_percent_int_cpg_all`="FA Basin Slope %",
+               mgmtReference = "Indpendent Variable"),
+            dv.labels = c("Model A", "Model B"), 
+            title = 'Bankfull Width', file = 'tab_model_bf.html')
+
+shapiro.test(residuals(lmm_bf_simp_yr))
+
+car::qqPlot(residuals(lmm_bf_simp_yr))
+
+plot(lmm_bf_simp_yr)
+
+performance::check_heteroscedasticity(lmm_bf_simp_yr)
+
+
+```
+
+
+Now for bank angle.
+
+```{r}
+
+
+lmm_ba_simp <- lmer(log(bank_angle)~ 
+                 log(fac_taudem_17all_int)+
+                 log(ave_basin_elev)+
+                 log(twi_100_int_cpg_all) + 
+                 mgmt + 
+                 (1 | Site), REML = T,
+                 gr_95_ts)
+
+lmm_ba_simp_yr <- lmer(log(bank_angle)~ 
+                 log(fac_taudem_17all_int)+
+                 log(ave_basin_elev)+
+                 log(twi_100_int_cpg_all) + 
+                 mgmt + 
+                 Year + 
+                 (Year|Site), REML = T,
+                 control = lmerControl(optimizer = 'bobyqa'),
+                 gr_95_ts)
+
+aa <- allFit(lmm_ba_simp_yr)
+
+broom.mixed::glance(aa) %>% select(optimizer, AIC, NLL_rel) %>%  arrange(NLL_rel)
+broom.mixed::tidy(aa, conf.int = TRUE) %>%  
+  arrange(effect, term, estimate) %>%  
+  select(-c(std.error, statistic)) %>% view()
+
+aa_aug <- broom.mixed::augment(lmm_bf)
+
+
+summ(lmm_ba_simp_yr, confint = T, t.df = 'k-r')
+summ(lmm_ba_simp, confint = T, t.df = 'k-r')
+
+#precise icc
+performance::icc(lmm_ba_simp_yr)
+performance::icc(lmm_ba_simp)
+
+anova(lmm_ba_simp_yr,lmm_ba_simp)
+
+## best model was the lmm_ba_simp_yr
+
+plot(lmm_ba_simp_yr)
+ggplot() + geom_density(aes(residuals(lmm_ba_simp_yr)))
+shapiro.test(residuals(lmm_ba_simp_yr))
+performance::check_heteroscedasticity(lmm_ba_simp_yr)
+car::qqPlot(residuals(lmm_ba_simp_yr), col = 'red')
+
+#not too bad with outliers (when compared to bankfull). 
+# still do robust analysis
+
+
+tab_model(lmm_ba_simp, lmm_ba_simp_yr,
+               df.method = 'kr',pred.labels = c(`log(fac_taudem_17all_int)`="log(FA Catchment Area)",
+               `log(ave_basin_elev)`="log(Mean Basin Elevation)",
+               `log(twi_100_int_cpg_all)`="log(FA TWI)",
+               mgmtReference = "Indpendent Variable"),
+            dv.labels = c("Model A", "Model B"), 
+            title = 'Bank Angle', file = 'tab_model_ba.html')
+
+```
+
+Now do width to depth
+```{r}
+
+wd_2009 <- gr_95_ts %>% filter(yr >= 2009)
+
+lmm_wd_simp <- lmer(log(wd_trans)~ 
+                 log(fac_taudem_17all_int)+
+                 log(us_precip_1981_2010_cpg_all)+
+                 log(ave_ann_cwd) +
+                 log(slope_percent_int_cpg_all) + 
+                 mgmt + 
+                 (1 | Site), REML = T, 
+                 wd_2009)
+
+lmm_wd_simp_yr <- lmer(log(wd_trans)~ 
+                 log(fac_taudem_17all_int)+
+                 log(us_precip_1981_2010_cpg_all)+
+                 log(ave_ann_cwd) +
+                 log(slope_percent_int_cpg_all) + 
+                 mgmt + 
+                 Year + 
+                 (Year|Site), REML = T,
+                 control = lmerControl(optimizer = 'bobyqa'),
+                 wd_2009)
+
+
+aa <- allFit(lmm_wd_simp_yr)
+
+broom.mixed::glance(aa) %>% select(optimizer, AIC, NLL_rel) %>%  arrange(NLL_rel)
+broom.mixed::tidy(aa, conf.int = TRUE) %>%  
+  arrange(effect, term, estimate) %>%  
+  select(-c(std.error, statistic)) %>% view()
+
+aa_aug <- broom.mixed::augment(lmm_bf)
+
+
+summ(lmm_wd_simp_yr, confint = T, t.df = 'k-r')
+summ(lmm_wd_simp, confint = T, t.df = 'k-r')
+
+anova(lmm_wd_simp_yr, lmm_wd_simp)
+
+performance::icc(lmm_wd_simp_yr)
+performance::icc(lmm_wd_simp)
+
+tab_model(lmm_wd_simp, lmm_wd_simp_yr,
+               df.method = 'kr',pred.labels = c(`log(fac_taudem_17all_int)`="log(FA Catchment Area)",
+               `log(us_precip_1981_2010_cpg_all)`="log(FA Average Annual Precipitation)",
+               `log(ave_ann_cwd)`="log(Mean Climatic Deficit)",
+               `log(slope_percent_int_cpg_all)`="log(FA Basin Slope %)",
+               mgmtReference = "Indpendent Variable"),
+            dv.labels = c("Model A", "Model B"), 
+            title = 'Width/Depth', file = 'tab_model_wd.html')
+plot(lmm_wd_simp_yr)
+ggplot() + geom_density(aes(residuals(lmm_wd_simp_yr)))
+shapiro.test(residuals(lmm_wd_simp_yr))
+car::qqPlot(residuals(lmm_wd_simp_yr), col = 'red')
+
+
+
+```
+
+
+```{r}
+library(webshot)
+webshot("tab_model_wd.html", "tab_model_wd.png")
+webshot("tab_model_ba.html", "tab_model_ba.png")
+webshot("tab_model_bf.html", "tab_model_bf.png")
+```
+
